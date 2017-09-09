@@ -4,6 +4,7 @@ title: Prediction Models for Weight Lifting Exercise Using Data From a Human Act
 author: Joseph Fabia
 date: "September 9, 2017"
 output: html_document
+keep_md: true
 ---
 
 ```{r setup, include=FALSE}
