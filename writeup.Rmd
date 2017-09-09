@@ -1,0 +1,571 @@
+---
+title: Prediction Models for Weight Lifting Exercise Using Data From a Human Activity
+  Recording Device
+author: Joseph Fabia
+date: "September 9, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r initialize, include = FALSE}
+library(data.table)
+library(caret)
+library(AppliedPredictiveModeling)
+library(rattle)
+library(randomForest)
+library(rpart.plot)
+library(gbm)
+library(survival)
+library(splines)
+library(parallel)
+library(plyr)
+
+rm(list=ls())
+```
+## Synopsis
+***
+In this report, we analyze data from research on Human Activity Recognition to accurately predict whether a particular weight-lifting exercise being performed correctly, and, if it is incorrect, predict what kind of error is being done in performing the exercise. We train three prediction models in this report - a classification model, a random forest model, and a boosted classification model. We select the model with the best prediction accuracy by testing them on a test dataset. Ultimately, we select the random forest model which has the best prediction accuracy at 99.69%. Details of the analysis are outlined in this report.
+
+## Data Processing
+***
+The data used in this analysis was compiled by Velloso, Ugulino and Fuks [1] for their research on human activity recognition which can be accessed [at this link](http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf). 
+
+The data was recorded from accelerometers on the belt, forearm, arm and dumbbell of six young healthy males between the age of 20-28 years who have little weight training experience. The participants were asked to perform 10 repititions of the Unilateral Dumbbell Biceps Curl correctly according to specification (labelled as "Class A"), and incorrectly in four different fashions: throwing the elbows in front ("Class B"); lifting the dumbell only halfway ("Class C"); lowering the dumbbell only halfway ("Class D"); and throwing the hips to the front ("Class E"). The participants were supervised by an experienced weight lifter to ensure proper execution of the exercises they were supposed to simulate. 
+
+The data was examined to check its reliability for the analysis, and several cleaning processes were done to prepare the data for the analysis, specifically:
+
+1. The first seven columns of the data were removed, which included information such as participant name, timestamp of when the data was recorded, and the window the data was recorded at. None of these data were necessary in the analysis.
+2. Any columns which had a majority of blank values or missing values were removed. Most of these columns were part of the original dataset to provide summary statistics on one exercise repitition for a particular participant (ex: kurtosis, skewness, maximum roll), and so there was no need to impute these values.
+3. Column field names were renamed to make them more sensible. The naming convention includes:
+ i. Identifying the location of the accelerometer (Belt, Forearm, Arm or Dumbbell)
+ ii. The rotation axis of the accelerometer (pitch, yaw, and roll)
+ iii. The measured unit (Specific Force, Angular Rate and Magentic Field)
+ iv. The axis at which the measured units were measured relative to the cartesian plane (x-axis, y-axis and z-axis)
+
+After the dataset was cleaned, it was split into a training and testing dataset through the 'Class' variable by creating bootstrap samples. The percentage of data that went into the training dataset was set to 70%, which was believed to be large enough to train the predictive models, while leaving the testing dataset (30% of data) large enough to test the predictive model's accuracy.
+
+The Appendix of this report shows the code used for cleaning the data and splitting it into training and test datasets.
+```{r dataprocessing, echo=FALSE}
+
+datasource.train <- "./pml-training.csv"
+datasource.test <- "./pml-testing.csv"
+data.train.URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+data.test.URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Check if both files exist.
+if( !file.exists(datasource.train)){
+        download.file(data.train.URL, destfile = "./pml-training.csv")
+        }
+if( !file.exists(datasource.test)){
+        download.file(data.test.URL, destfile = "./pml-testing.csv")
+}        
+
+
+# Load the data and manual from their respective sources
+project.data.train <- read.csv(datasource.train)
+project.data.test <- read.csv(datasource.test)
+
+# There are many columns with blank entries or NA entries, so we drop them
+# from our analysis.
+
+clean.train <- 
+        subset(project.data.train, 
+               select=c("roll_belt","pitch_belt","yaw_belt",
+                        "total_accel_belt",
+                        "gyros_belt_x","gyros_belt_y","gyros_belt_z",
+                        "accel_belt_x","accel_belt_y","accel_belt_z",
+                        "magnet_belt_x","magnet_belt_y","magnet_belt_z",
+                        "roll_arm","pitch_arm","yaw_arm",
+                        "total_accel_arm",
+                        "gyros_arm_x","gyros_arm_y","gyros_arm_z",
+                        "accel_arm_x","accel_arm_y","accel_arm_z",
+                        "magnet_arm_x","magnet_arm_y","magnet_arm_z",
+                        "roll_dumbbell","pitch_dumbbell","yaw_dumbbell",
+                        "total_accel_dumbbell",
+                        "gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z",
+                        "accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z",
+                        "magnet_dumbbell_x","magnet_dumbbell_y","magnet_dumbbell_z",
+                        "roll_forearm","pitch_forearm","yaw_forearm",
+                        "total_accel_forearm",
+                        "gyros_forearm_x","gyros_forearm_y","gyros_forearm_z",
+                        "accel_forearm_x","accel_forearm_y","accel_forearm_z",
+                        "magnet_forearm_x","magnet_forearm_y","magnet_forearm_z",
+                        "classe"))
+
+
+
+clean.test <- 
+        subset(project.data.test, 
+               select=c("roll_belt","pitch_belt","yaw_belt",
+                        "total_accel_belt",
+                        "gyros_belt_x","gyros_belt_y","gyros_belt_z",
+                        "accel_belt_x","accel_belt_y","accel_belt_z",
+                        "magnet_belt_x","magnet_belt_y","magnet_belt_z",
+                        "roll_arm","pitch_arm","yaw_arm",
+                        "total_accel_arm",
+                        "gyros_arm_x","gyros_arm_y","gyros_arm_z",
+                        "accel_arm_x","accel_arm_y","accel_arm_z",
+                        "magnet_arm_x","magnet_arm_y","magnet_arm_z",
+                        "roll_dumbbell","pitch_dumbbell","yaw_dumbbell",
+                        "total_accel_dumbbell",
+                        "gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z",
+                        "accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z",
+                        "magnet_dumbbell_x","magnet_dumbbell_y","magnet_dumbbell_z",
+                        "roll_forearm","pitch_forearm","yaw_forearm",
+                        "total_accel_forearm",
+                        "gyros_forearm_x","gyros_forearm_y","gyros_forearm_z",
+                        "accel_forearm_x","accel_forearm_y","accel_forearm_z",
+                        "magnet_forearm_x","magnet_forearm_y","magnet_forearm_z"))
+
+# belt, arm, dumbbell and forearm pertain to where the trackers are.
+# Hence we have Belt/Arm/Dumbbell/Forearm as the first part of the variable.
+
+# Next, we have roll, pitch and yaw, which refer to the rotation axes.
+# This will be the second name of our variable
+
+# gyros, accel and magnet refer to the inertial measurement unit tracking
+# Specific Force, Angular Rate and Magnetic Field surrounding the body,
+# using a combination of Gyroscopes, Accelerometers and Magnetometers. 
+# For purpose of this study we will rename Gyros, Accel and Magnet to
+# AngularRate, SpecificForce, and MagneticField.
+# We will also name the axes of X, Y and Z as X,Y and Z.
+
+
+names(clean.train) <- c("Belt.Roll","Belt.Pitch","Belt.Yaw",
+                        "Belt.TotalSpecificForce","Belt.AngularRate.Xaxis",
+                        "Belt.AngularRate.Yaxis",
+                        "Belt.AngularRate.Zaxis","Belt.SpecificForce.Xaxis",
+                        "Belt.SpecificForce.Yaxis",
+                        "Belt.SpecificForce.Zaxis",
+                        "Belt.MagneticField.Xaxis",
+                        "Belt.MagneticField.Yaxis",
+                        "Belt.MagneticField.Zaxis",
+                        "Arm.Roll","Arm.Pitch","Arm.Yaw",
+                        "Arm.TotalSpecificForce",
+                        "Arm.AngularRate.Xaxis",
+                        "Arm.AngularRate.Yaxis",
+                        "Arm.AngularRate.Zaxis",
+                        "Arm.SpecificForce.Xaxis",
+                        "Arm.SpecificForce.Yaxis",
+                        "Arm.SpecificForce.Zaxis",
+                        "Arm.MagneticField.Xaxis",
+                        "Arm.MagneticField.Yaxis",
+                        "Arm.MagneticField.Zaxis",
+                        "Dumbbell.Roll","Dumbbell.Pitch","Dumbbell.Yaw",
+                        "Dumbbell.TotalSpecificForce",
+                        "Dumbbell.AngularRate.Xaxis",
+                        "Dumbbell.AngularRate.Yaxis",
+                        "Dumbbell.AngularRate.Zaxis",
+                        "Dumbbell.SpecificForce.Xaxis",
+                        "Dumbbell.SpecificForce.Yaxis",
+                        "Dumbbell.SpecificForce.Zaxis",
+                        "Dumbbell.MagneticField.Xaxis",
+                        "Dumbbell.MagneticField.Yaxis",
+                        "Dumbbell.MagneticField.Zaxis",
+                        "Forearm.Roll","Forearm.Pitch","Forearm.Yaw",
+                        "Forearm.TotalSpecificForce",
+                        "Forearm.AngularRate.Xaxis",
+                        "Forearm.AngularRate.Yaxis",
+                        "Forearm.AngularRate.Zaxis",
+                        "Forearm.SpecificForce.Xaxis",
+                        "Forearm.SpecificForce.Yaxis",
+                        "Forearm.SpecificForce.Zaxis",
+                        "Forearm.MagneticField.Xaxis",
+                        "Forearm.MagneticField.Yaxis",
+                        "Forearm.MagneticField.Zaxis",
+                        "Class")
+
+
+names(clean.test) <- c("Belt.Roll","Belt.Pitch","Belt.Yaw",
+                       "Belt.TotalSpecificForce","Belt.AngularRate.Xaxis",
+                       "Belt.AngularRate.Yaxis",
+                       "Belt.AngularRate.Zaxis","Belt.SpecificForce.Xaxis",
+                       "Belt.SpecificForce.Yaxis",
+                       "Belt.SpecificForce.Zaxis",
+                       "Belt.MagneticField.Xaxis",
+                       "Belt.MagneticField.Yaxis",
+                       "Belt.MagneticField.Zaxis",
+                       "Arm.Roll","Arm.Pitch","Arm.Yaw",
+                       "Arm.TotalSpecificForce",
+                       "Arm.AngularRate.Xaxis",
+                       "Arm.AngularRate.Yaxis",
+                       "Arm.AngularRate.Zaxis",
+                       "Arm.SpecificForce.Xaxis",
+                       "Arm.SpecificForce.Yaxis",
+                       "Arm.SpecificForce.Zaxis",
+                       "Arm.MagneticField.Xaxis",
+                       "Arm.MagneticField.Yaxis",
+                       "Arm.MagneticField.Zaxis",
+                       "Dumbbell.Roll","Dumbbell.Pitch","Dumbbell.Yaw",
+                       "Dumbbell.TotalSpecificForce",
+                       "Dumbbell.AngularRate.Xaxis",
+                       "Dumbbell.AngularRate.Yaxis",
+                       "Dumbbell.AngularRate.Zaxis",
+                       "Dumbbell.SpecificForce.Xaxis",
+                       "Dumbbell.SpecificForce.Yaxis",
+                       "Dumbbell.SpecificForce.Zaxis",
+                       "Dumbbell.MagneticField.Xaxis",
+                       "Dumbbell.MagneticField.Yaxis",
+                       "Dumbbell.MagneticField.Zaxis",
+                       "Forearm.Roll","Forearm.Pitch","Forearm.Yaw",
+                       "Forearm.TotalSpecificForce",
+                       "Forearm.AngularRate.Xaxis",
+                       "Forearm.AngularRate.Yaxis",
+                       "Forearm.AngularRate.Zaxis",
+                       "Forearm.SpecificForce.Xaxis",
+                       "Forearm.SpecificForce.Yaxis",
+                       "Forearm.SpecificForce.Zaxis",
+                       "Forearm.MagneticField.Xaxis",
+                       "Forearm.MagneticField.Yaxis",
+                       "Forearm.MagneticField.Zaxis")
+
+
+# Create a counter that will divide the training dataset into a trained dataset
+# and test dataset.
+set.seed(1234567890)
+indexTrain <- createDataPartition(clean.train$Class, p = .70)[[1]]
+train.training <- clean.train[ indexTrain, ]
+train.testing <- clean.train[ -indexTrain, ]
+train.seed <- 987654321
+```
+## Predictive Modeling
+***
+In this analysis, predictive models were trained to determine whether, based on the data provided, the weight-lifting exercise performed was correct or incorrect, and, if it was incorrect, whether the model could accurately identify what type of exercise error was performed.
+
+Three types of predictive models were used: Classification tree, Random Forest, and a Boosted Tree Model. 
+
+As noted in the Data Processing section, the Class variable was the identifier to determine what type of exercise was simulated (the correct approach and four incorrect approaches). Each predictive model was trained to predict the Class variable with all other variables. Once the models were trained, they were cross validated for accuracy by applying them to the test dataset. The superior model was selected by choosing the model which resulted in the lowest out-of-sample error.
+
+Each predicitve model was trained in R using the caret package. In order to improve model accuracy for all three predictive models, each model underwent preprocessing options and cross-validation options, specifically:
+
+* Each model preprocessed the data before it was trained by normalizing variables, i.e., subtracting the observations of each variable by its mean and dividing the observations of each variable by its standard deviation
+* Each model performed cross-validation on the data with 3 subsamples.
+
+The Appendix of this report contains code to train and test the predictive models.
+
+### The Classification Tree.
+***
+A classification tree with normalized predicting variables and cross-validation with 3 folds was trained in R with the following output and final model.
+```{r ClassTrain, echo=FALSE}
+# Reset the seed
+set.seed(train.seed)
+# Train data using Classification tree
+rpart.model <- train(Class ~ . , data=train.training, method = "rpart", 
+                        preProcess=c("center","scale"),
+                        trControl = trainControl(method="cv", number=3))
+# Print the prediction model and the out of sample error
+print(rpart.model)
+```
+The resulting classification tree can be better viewed in the following diagram
+```{r ClassTree, echo=FALSE}
+# Plot used for tree
+fancyRpartPlot(rpart.model$finalModel, 
+               main = "",
+               sub = "")
+```
+
+The model was cross-validated using the test dataset, resulting in the following confusion matrix:
+```{r ClassPred, echo=FALSE}
+# Predict using Classification tree
+pred.rpart <- predict(rpart.model, train.testing)
+confusionMatrix(pred.rpart, train.testing$Class)
+```
+
+The resulting classification tree model has a predictive accuracy of 55%, or an out-of-sample error of 45%, which means the model does not predict accurately.
+
+### The Random Forest
+A Random Forest with normalized predicting variables and cross-validation with 3 folds was trained in R with the following output and final model.
+```{r ForestTrain, echo=FALSE}
+set.seed(train.seed)
+rf.model <- randomForest(Class ~ . , data=train.training, importance=TRUE,
+                            trControl = trainControl(method="cv", number=3),
+                            preProcess=c("center","scale"))
+print(rf.model, digits=3)
+```
+
+The resulting final Random Forest model implies a very low out-of-bag error estimate (0.53%) and the confusion matrix suggests a low error rate based on the training dataset. This model was cross-validated using the test dataset, resulting in the following confusion matrix:
+```{r ForestTest, echo=FALSE}
+pred.rf <- predict(rf.model, train.testing)
+confusionMatrix(pred.rf, train.testing$Class)
+```
+
+The accuracy rate is 99.69% for an out-of-sample error of 0.003%, indicating that the predictive power of this model is very high.
+
+### The Boosted Tree
+***
+A Boosted tree with normalized predicting variables and cross-validation with 3 folds was trained in R with the following output and final model.
+```{r BoostTrain, echo=FALSE}
+set.seed(train.seed)
+gbm.model <- train(Class ~ ., data=train.training, method = "gbm",
+                      verbose = FALSE,
+                      trControl = trainControl(method="cv", number=3),
+                      preProcess = c("center","scale"))
+print(gbm.model, digits = 3)
+```
+
+The final model was cross validated using the test dataset, resulting in the following confusion matrix:
+
+```{r BoostTest, echo=FALSE}
+pred.gbm <- predict(gbm.model, train.testing)
+confusionMatrix(pred.gbm, train.testing$Class)
+```
+
+The boosted tree model has a high accuracy rate (96%), however, its accuracy is outclassed by the Random Forest (99%), indicating that the Random Forest is the best predictive model out of the three.
+
+
+## Conclusions 
+***
+
+This analysis showed that the Random Forest model had the strongest predictive power in predicting whether a weight-lifting activity was being done correctly or, if it was being done incorrectly, what was being done wrong. The accuracy rate of the Random Forest model was superior, clocking in at 99%. The boosted tree model also recorded a high predictive accuracy rate at 95%, however it was outclassed by the Random Forest model. Finally, the Classification Tree proved to be the inferior model, clocking in only at 55% accuracy. We therefore select the Random Forest model as our predictive model.
+
+
+## References
+***
+
+> [1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+## Appendix: R Program for Reproducibility
+***
+
+```{r results='hide', fig.show='hide', echo=TRUE, eval = FALSE}
+library(data.table)
+library(caret)
+library(AppliedPredictiveModeling)
+library(rattle)
+library(randomForest)
+library(rpart.plot)
+library(gbm)
+library(survival)
+library(splines)
+library(parallel)
+library(plyr)
+
+rm(list=ls())
+
+datasource.train <- "./pml-training.csv"
+datasource.test <- "./pml-testing.csv"
+data.train.URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+data.test.URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Check if both files exist.
+if( !file.exists(datasource.train)){
+        download.file(data.train.URL, destfile = "./pml-training.csv")
+        }
+if( !file.exists(datasource.test)){
+        download.file(data.test.URL, destfile = "./pml-testing.csv")
+}        
+
+
+# Load the data and manual from their respective sources
+project.data.train <- read.csv(datasource.train)
+project.data.test <- read.csv(datasource.test)
+
+# There are many columns with blank entries or NA entries, so we drop them
+# from our analysis.
+
+clean.train <- 
+        subset(project.data.train, 
+               select=c("roll_belt","pitch_belt","yaw_belt",
+                        "total_accel_belt",
+                        "gyros_belt_x","gyros_belt_y","gyros_belt_z",
+                        "accel_belt_x","accel_belt_y","accel_belt_z",
+                        "magnet_belt_x","magnet_belt_y","magnet_belt_z",
+                        "roll_arm","pitch_arm","yaw_arm",
+                        "total_accel_arm",
+                        "gyros_arm_x","gyros_arm_y","gyros_arm_z",
+                        "accel_arm_x","accel_arm_y","accel_arm_z",
+                        "magnet_arm_x","magnet_arm_y","magnet_arm_z",
+                        "roll_dumbbell","pitch_dumbbell","yaw_dumbbell",
+                        "total_accel_dumbbell",
+                        "gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z",
+                        "accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z",
+                        "magnet_dumbbell_x","magnet_dumbbell_y","magnet_dumbbell_z",
+                        "roll_forearm","pitch_forearm","yaw_forearm",
+                        "total_accel_forearm",
+                        "gyros_forearm_x","gyros_forearm_y","gyros_forearm_z",
+                        "accel_forearm_x","accel_forearm_y","accel_forearm_z",
+                        "magnet_forearm_x","magnet_forearm_y","magnet_forearm_z",
+                        "classe"))
+
+
+
+clean.test <- 
+        subset(project.data.test, 
+               select=c("roll_belt","pitch_belt","yaw_belt",
+                        "total_accel_belt",
+                        "gyros_belt_x","gyros_belt_y","gyros_belt_z",
+                        "accel_belt_x","accel_belt_y","accel_belt_z",
+                        "magnet_belt_x","magnet_belt_y","magnet_belt_z",
+                        "roll_arm","pitch_arm","yaw_arm",
+                        "total_accel_arm",
+                        "gyros_arm_x","gyros_arm_y","gyros_arm_z",
+                        "accel_arm_x","accel_arm_y","accel_arm_z",
+                        "magnet_arm_x","magnet_arm_y","magnet_arm_z",
+                        "roll_dumbbell","pitch_dumbbell","yaw_dumbbell",
+                        "total_accel_dumbbell",
+                        "gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z",
+                        "accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z",
+                        "magnet_dumbbell_x","magnet_dumbbell_y","magnet_dumbbell_z",
+                        "roll_forearm","pitch_forearm","yaw_forearm",
+                        "total_accel_forearm",
+                        "gyros_forearm_x","gyros_forearm_y","gyros_forearm_z",
+                        "accel_forearm_x","accel_forearm_y","accel_forearm_z",
+                        "magnet_forearm_x","magnet_forearm_y","magnet_forearm_z"))
+
+# belt, arm, dumbbell and forearm pertain to where the trackers are.
+# Hence we have Belt/Arm/Dumbbell/Forearm as the first part of the variable.
+
+# Next, we have roll, pitch and yaw, which refer to the rotation axes.
+# This will be the second name of our variable
+
+# gyros, accel and magnet refer to the inertial measurement unit tracking
+# Specific Force, Angular Rate and Magnetic Field surrounding the body,
+# using a combination of Gyroscopes, Accelerometers and Magnetometers. 
+# For purpose of this study we will rename Gyros, Accel and Magnet to
+# AngularRate, SpecificForce, and MagneticField.
+# We will also name the axes of X, Y and Z as X,Y and Z.
+
+
+names(clean.train) <- c("Belt.Roll","Belt.Pitch","Belt.Yaw",
+                        "Belt.TotalSpecificForce","Belt.AngularRate.Xaxis",
+                        "Belt.AngularRate.Yaxis",
+                        "Belt.AngularRate.Zaxis","Belt.SpecificForce.Xaxis",
+                        "Belt.SpecificForce.Yaxis",
+                        "Belt.SpecificForce.Zaxis",
+                        "Belt.MagneticField.Xaxis",
+                        "Belt.MagneticField.Yaxis",
+                        "Belt.MagneticField.Zaxis",
+                        "Arm.Roll","Arm.Pitch","Arm.Yaw",
+                        "Arm.TotalSpecificForce",
+                        "Arm.AngularRate.Xaxis",
+                        "Arm.AngularRate.Yaxis",
+                        "Arm.AngularRate.Zaxis",
+                        "Arm.SpecificForce.Xaxis",
+                        "Arm.SpecificForce.Yaxis",
+                        "Arm.SpecificForce.Zaxis",
+                        "Arm.MagneticField.Xaxis",
+                        "Arm.MagneticField.Yaxis",
+                        "Arm.MagneticField.Zaxis",
+                        "Dumbbell.Roll","Dumbbell.Pitch","Dumbbell.Yaw",
+                        "Dumbbell.TotalSpecificForce",
+                        "Dumbbell.AngularRate.Xaxis",
+                        "Dumbbell.AngularRate.Yaxis",
+                        "Dumbbell.AngularRate.Zaxis",
+                        "Dumbbell.SpecificForce.Xaxis",
+                        "Dumbbell.SpecificForce.Yaxis",
+                        "Dumbbell.SpecificForce.Zaxis",
+                        "Dumbbell.MagneticField.Xaxis",
+                        "Dumbbell.MagneticField.Yaxis",
+                        "Dumbbell.MagneticField.Zaxis",
+                        "Forearm.Roll","Forearm.Pitch","Forearm.Yaw",
+                        "Forearm.TotalSpecificForce",
+                        "Forearm.AngularRate.Xaxis",
+                        "Forearm.AngularRate.Yaxis",
+                        "Forearm.AngularRate.Zaxis",
+                        "Forearm.SpecificForce.Xaxis",
+                        "Forearm.SpecificForce.Yaxis",
+                        "Forearm.SpecificForce.Zaxis",
+                        "Forearm.MagneticField.Xaxis",
+                        "Forearm.MagneticField.Yaxis",
+                        "Forearm.MagneticField.Zaxis",
+                        "Class")
+
+
+names(clean.test) <- c("Belt.Roll","Belt.Pitch","Belt.Yaw",
+                       "Belt.TotalSpecificForce","Belt.AngularRate.Xaxis",
+                       "Belt.AngularRate.Yaxis",
+                       "Belt.AngularRate.Zaxis","Belt.SpecificForce.Xaxis",
+                       "Belt.SpecificForce.Yaxis",
+                       "Belt.SpecificForce.Zaxis",
+                       "Belt.MagneticField.Xaxis",
+                       "Belt.MagneticField.Yaxis",
+                       "Belt.MagneticField.Zaxis",
+                       "Arm.Roll","Arm.Pitch","Arm.Yaw",
+                       "Arm.TotalSpecificForce",
+                       "Arm.AngularRate.Xaxis",
+                       "Arm.AngularRate.Yaxis",
+                       "Arm.AngularRate.Zaxis",
+                       "Arm.SpecificForce.Xaxis",
+                       "Arm.SpecificForce.Yaxis",
+                       "Arm.SpecificForce.Zaxis",
+                       "Arm.MagneticField.Xaxis",
+                       "Arm.MagneticField.Yaxis",
+                       "Arm.MagneticField.Zaxis",
+                       "Dumbbell.Roll","Dumbbell.Pitch","Dumbbell.Yaw",
+                       "Dumbbell.TotalSpecificForce",
+                       "Dumbbell.AngularRate.Xaxis",
+                       "Dumbbell.AngularRate.Yaxis",
+                       "Dumbbell.AngularRate.Zaxis",
+                       "Dumbbell.SpecificForce.Xaxis",
+                       "Dumbbell.SpecificForce.Yaxis",
+                       "Dumbbell.SpecificForce.Zaxis",
+                       "Dumbbell.MagneticField.Xaxis",
+                       "Dumbbell.MagneticField.Yaxis",
+                       "Dumbbell.MagneticField.Zaxis",
+                       "Forearm.Roll","Forearm.Pitch","Forearm.Yaw",
+                       "Forearm.TotalSpecificForce",
+                       "Forearm.AngularRate.Xaxis",
+                       "Forearm.AngularRate.Yaxis",
+                       "Forearm.AngularRate.Zaxis",
+                       "Forearm.SpecificForce.Xaxis",
+                       "Forearm.SpecificForce.Yaxis",
+                       "Forearm.SpecificForce.Zaxis",
+                       "Forearm.MagneticField.Xaxis",
+                       "Forearm.MagneticField.Yaxis",
+                       "Forearm.MagneticField.Zaxis")
+
+
+# Create a counter that will divide the training dataset into a trained dataset
+# and test dataset.
+set.seed(1234567890)
+indexTrain <- createDataPartition(clean.train$Class, p = .70)[[1]]
+train.training <- clean.train[ indexTrain, ]
+train.testing <- clean.train[ -indexTrain, ]
+train.seed <- 987654321
+
+# Reset the seed
+set.seed(train.seed)
+# Train data using Classification tree with normalized variables and cross-validation with 3-folds
+rpart.model <- train(Class ~ . , data=train.training, method = "rpart", 
+                        preProcess=c("center","scale"),
+                        trControl = trainControl(method="cv", number=3))
+# Plot used for tree
+fancyRpartPlot(rpart.model$finalModel, 
+               main = "",
+               sub = "")
+# Predict using Classification tree
+pred.rpart <- predict(rpart.model, train.testing)
+# Print the prediction model and confusion matrix
+print(rpart.model)
+confusionMatrix(pred.rpart, train.testing$Class)
+
+# Reset the 
+set.seed(train.seed)
+
+# Train data using Random Forest with normalized variables and cross-validation with 3-folds
+rf.model <- randomForest(Class ~ . , data=train.training, importance=TRUE,
+                            trControl = trainControl(method="cv", number=3),
+                            preProcess=c("center","scale"))
+# Print the model
+print(rf.model, digits=3)
+# Predict using the random forest and test data
+pred.rf <- predict(rf.model, train.testing)
+# Print the confusion matrix
+confusionMatrix(pred.rf, train.testing$Class)
+
+# Reset the seed
+set.seed(train.seed)
+# Train data using Boosted tree with normalized variables and cross-validation with 3 folds
+gbm.model <- train(Class ~ ., data=train.training, method = "gbm",
+                      verbose = FALSE,
+                      trControl = trainControl(method="cv", number=3),
+                      preProcess = c("center","scale"))
+# Pring the model
+print(gbm.model, digits = 3)
+# Predict using the boosted tree model and test data
+pred.gbm <- predict(gbm.model, train.testing)
+# Print the confusion matrix
+confusionMatrix(pred.gbm, train.testing$Class)
+```
